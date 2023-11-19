@@ -22,6 +22,11 @@
 * SOFTWARE.                                                                      *
 *********************************************************************************/
 
+// Libraries
+#include <WiFiManager.h>
+#include <ESP8266WebServer.h>
+#include <ArduinoJson.h>
+
 // IO Pins
 #define BATTERY_VOLTAGE_PIN A0
 #define ENABLE_INVERSOR_PIN D0
@@ -50,6 +55,9 @@ unsigned long nextVoltageUpdateSec      = 0;
 unsigned long nextSerialReport          = 0;
 unsigned long chargerStatusBlockedUntil = 0;
 
+// Web server for metrics
+ESP8266WebServer server(80);
+StaticJsonDocument<255> jsonDocument;
 
 float getVoltage() {
     return analogRead(BATTERY_VOLTAGE_PIN) * voltageMultiplier;
@@ -138,7 +146,26 @@ void printSerialReport() {
     }
 }
 
+void serveStatusPage() {
+    String jsonString = "";
+    JsonObject object = jsonDocument.to<JsonObject>();
+    object["uptime"] = uptimeSeconds;
+    object["voltage"] = voltage;
+    object["inverterEnabled"] = inverterEnabled;
+    object["chargerEnabled"] = chargerEnabled;
+    object["alarm"] = (voltage < ACTIVATE_WARNING_VOLTAGE);
+    serializeJson(jsonDocument, jsonString);
+    server.send(200, "application/json", jsonString);
+}
+
+void serveNotFound() {
+    server.send(404, "plain/text", "NOT FOUND");
+}
+
+
 void setup() {
+    
+    // Basic pins and I/O setup
     pinMode(LED_BUILTIN, OUTPUT);
     pinMode(BATTERY_VOLTAGE_PIN, INPUT);
     pinMode(ENABLE_INVERSOR_PIN, OUTPUT);
@@ -149,6 +176,24 @@ void setup() {
     Serial.begin(9600);
     delay(1000);
     Serial.println("Charging controller started!");
+
+    // Setup WiFi access
+    Serial.println("Connecting to WiFi...");
+    WiFiManager wifiManager;
+    wifiManager.setAPStaticIPConfig(IPAddress(192,168,0,1), IPAddress(192,168,0,1), IPAddress(255,255,255,0));
+    if (!wifiManager.autoConnect("ChargingController")) {
+        Serial.println("Failed to connect.");
+        delay(10000);
+        ESP.restart();
+    } else {
+        Serial.println("Connected!");
+    }
+    server.on("/status", serveStatusPage);
+    server.onNotFound(serveNotFound);
+    server.begin();
+    Serial.println("HTTP server started!");
+
+    // Initialize voltage level
     voltageMultiplier = 3.3 * (VOLTAGE_DIVIDER_R1 + VOLTAGE_DIVIDER_R2) / 1023.0 / VOLTAGE_DIVIDER_R2 * VOLTAGE_ADJUST_FACTOR;
     voltage = getVoltage();
 }
@@ -161,4 +206,5 @@ void loop() {
     updateInversorStatus();
     updateBuzzer();
     printSerialReport();
+    server.handleClient();
 }
