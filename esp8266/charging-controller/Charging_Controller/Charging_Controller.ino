@@ -26,6 +26,7 @@
 #include <WiFiManager.h>
 #include <ESP8266WebServer.h>
 #include <ArduinoJson.h>
+#include <DoubleResetDetector.h>
 
 // IO Pins
 #define BATTERY_VOLTAGE_PIN A0
@@ -34,16 +35,21 @@
 #define BUZZER_PIN          D5
 
 // Voltage thresholds
-#define ACTIVATE_CHARGING_VOLTAGE 26.4 // 3.30v per cell
-#define ACTIVATE_INVERSOR_VOLTAGE 24.8 // 3.10v per cell
-#define ACTIVATE_WARNING_VOLTAGE  24.4 // 3.05v per cell
+#define ACTIVATE_CHARGING_VOLTAGE 26.0 // 3.250v per cell
+#define ACTIVATE_INVERSOR_VOLTAGE 24.4 // 3.050v per cell
+#define ACTIVATE_WARNING_VOLTAGE  24.2 // 3.025v per cell
 
 // Settings
-#define CHARGING_TIME_SECONDS    10800 // 3 hours
+#define CHARGING_TIME_SECONDS    14400 // 4 hours
 #define IDLE_MIN_TIME_SECONDS     1800 // 30 minutes 
 #define VOLTAGE_DIVIDER_R1       68000 // 68k ohm (to battery)
 #define VOLTAGE_DIVIDER_R2        6800 // 6k8 ohm (to ground)
 #define VOLTAGE_ADJUST_FACTOR    0.911 // Parameter for minor adjust
+
+// Double Reset to reconfigure WiFi
+#define DRD_TIMEOUT 10  // Number of seconds after reset during which a subsequent reset will be considered a double reset.
+#define DRD_ADDRESS 0   // RTC Memory Address for the DoubleResetDetector to use
+
 
 float voltage                           = 0.0;
 float voltageMultiplier                 = 0.0;
@@ -58,6 +64,9 @@ unsigned long chargerStatusBlockedUntil = 0;
 // Web server for metrics
 ESP8266WebServer server(80);
 StaticJsonDocument<255> jsonDocument;
+
+// Double Reset detector
+DoubleResetDetector drd(DRD_TIMEOUT, DRD_ADDRESS);
 
 float getVoltage() {
     return analogRead(BATTERY_VOLTAGE_PIN) * voltageMultiplier;
@@ -162,6 +171,17 @@ void serveNotFound() {
     server.send(404, "plain/text", "NOT FOUND");
 }
 
+void configModeCallback(WiFiManager *localWifiManager) {
+    drd.stop();
+    Serial.println("Entering Wifi Manager configuration mode...");
+    for (int blinks = 0; blinks < 15; blinks++) {
+      digitalWrite(LED_BUILTIN, LOW);
+      delay(100);
+      digitalWrite(LED_BUILTIN, HIGH);
+      delay(100);
+    }
+    digitalWrite(LED_BUILTIN, LOW);
+}
 
 void setup() {
     
@@ -181,13 +201,20 @@ void setup() {
     Serial.println("Connecting to WiFi...");
     WiFiManager wifiManager;
     wifiManager.setAPStaticIPConfig(IPAddress(192,168,0,1), IPAddress(192,168,0,1), IPAddress(255,255,255,0));
-    if (!wifiManager.autoConnect("ChargingController")) {
-        Serial.println("Failed to connect.");
-        delay(10000);
-        ESP.restart();
+    wifiManager.setAPCallback(configModeCallback);
+    if (drd.detectDoubleReset()) {
+        wifiManager.startConfigPortal("ChargingController");
     } else {
-        Serial.println("Connected!");
+        if (!wifiManager.autoConnect("ChargingController")) {
+            Serial.println("Failed to connect.");
+            delay(10000);
+            ESP.restart();
+        } else {
+            Serial.println("Connected!");
+        }
     }
+    delay(1000);
+    drd.stop();
     server.on("/status", serveStatusPage);
     server.onNotFound(serveNotFound);
     server.begin();
