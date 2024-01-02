@@ -38,19 +38,21 @@
 // Hardware settings
 #define VOLTAGE_DIVIDER_R1       68000 // 68k ohm (to battery)
 #define VOLTAGE_DIVIDER_R2        6800 // 6k8 ohm (to ground)
-#define VOLTAGE_ADJUST_FACTOR    0.911 // Parameter for minor adjust
+
 
 // Default values
 #define ACTIVATE_CHARGING_VOLTAGE_KEY           "charging-volt"
-#define ACTIVATE_CHARGING_VOLTAGE_DEFAULT_VALUE           26.0 // 3.25v per cell
+#define ACTIVATE_CHARGING_VOLTAGE_DEFAULT_VALUE           26.0 // 3.250v per cell
 #define ACTIVATE_INVERSOR_VOLTAGE_KEY           "inversor-volt"
-#define ACTIVATE_INVERSOR_VOLTAGE_DEFAULT_VALUE           24.4 // 3.05v per cell
+#define ACTIVATE_INVERSOR_VOLTAGE_DEFAULT_VALUE           24.4 // 3.050v per cell
 #define ACTIVATE_WARNING_VOLTAGE_KEY             "warning-volt"
-#define ACTIVATE_WARNING_VOLTAGE_DEFAULT_VALUE            24.0 // 3.00v per cell
+#define ACTIVATE_WARNING_VOLTAGE_DEFAULT_VALUE            24.2 // 3.025v per cell
 #define CHARGING_TIME_SECONDS_KEY               "charging-time"
-#define CHARGING_TIME_SECONDS_DEFAULT_VALUE              14400 // 4 hours
+#define CHARGING_TIME_SECONDS_DEFAULT_VALUE              10800 // 3 hours
 #define IDLE_MIN_TIME_SECONDS_KEY               "idle-min-time"
-#define IDLE_MIN_TIME_SECONDS_DEFAULT_VALUE               1800 // 30 minutes 
+#define IDLE_MIN_TIME_SECONDS_DEFAULT_VALUE               1800 // 30 minutes
+#define VOLTAGE_ADJUST_FACTOR_KEY                     "voltAdj"
+#define VOLTAGE_ADJUST_FACTOR_DEFAULT_VALUE                1.0 // 1 = No changes
 
 // Double Reset to reconfigure WiFi
 #define DRD_TIMEOUT 10  // Number of seconds after reset during which a subsequent reset will be considered a double reset.
@@ -77,15 +79,15 @@ StaticJsonDocument<255> jsonDocument;
 DoubleResetDetector drd(DRD_TIMEOUT, DRD_ADDRESS);
 
 float getActivateChargingVoltage() {
-    return roundf(preferences.getFloat(ACTIVATE_CHARGING_VOLTAGE_KEY, ACTIVATE_CHARGING_VOLTAGE_DEFAULT_VALUE) * 1000) / 1000;
+    return preferences.getFloat(ACTIVATE_CHARGING_VOLTAGE_KEY, ACTIVATE_CHARGING_VOLTAGE_DEFAULT_VALUE);
 }
 
 float getActivateInversorVoltage() {
-    return roundf(preferences.getFloat(ACTIVATE_INVERSOR_VOLTAGE_KEY, ACTIVATE_INVERSOR_VOLTAGE_DEFAULT_VALUE) * 1000) / 1000;
+    return preferences.getFloat(ACTIVATE_INVERSOR_VOLTAGE_KEY, ACTIVATE_INVERSOR_VOLTAGE_DEFAULT_VALUE);
 }
 
 float getActivateWarningVoltage() {
-    return roundf(preferences.getFloat(ACTIVATE_WARNING_VOLTAGE_KEY, ACTIVATE_WARNING_VOLTAGE_DEFAULT_VALUE) * 1000) / 1000;
+    return preferences.getFloat(ACTIVATE_WARNING_VOLTAGE_KEY, ACTIVATE_WARNING_VOLTAGE_DEFAULT_VALUE);
 }
 
 unsigned int getChargingTimeSeconds() {
@@ -96,8 +98,12 @@ unsigned int getIdleMinTimeSeconds() {
     return preferences.getUInt(IDLE_MIN_TIME_SECONDS_KEY, IDLE_MIN_TIME_SECONDS_DEFAULT_VALUE);
 }
 
+float getVoltageAdjustFactor() {
+    return preferences.getFloat(VOLTAGE_ADJUST_FACTOR_KEY, VOLTAGE_ADJUST_FACTOR_DEFAULT_VALUE);
+}
+
 float getVoltage() {
-    return roundf(analogRead(BATTERY_VOLTAGE_PIN) * voltageMultiplier * 1000) / 1000;
+    return analogRead(BATTERY_VOLTAGE_PIN) * voltageMultiplier;
 }
 
 void updateUptime() {
@@ -126,7 +132,7 @@ void updateLedStatus() {
 
 void updateVoltage() {
     if (nextVoltageUpdateSec <= uptimeSeconds) {
-        voltage = roundf((voltage * 9 + getVoltage()) * 100) / 1000;
+        voltage = (voltage * 9 + getVoltage()) / 10;
         nextVoltageUpdateSec = uptimeSeconds + 1;
     } 
 }
@@ -182,7 +188,8 @@ void printSerialReport() {
       float activateWarningVoltage = getActivateWarningVoltage();
       unsigned int chargingTimeSecs = getChargingTimeSeconds();
       unsigned int idleMinTimeSecs = getIdleMinTimeSeconds();
-      Serial.printf("uptime: %dd%02dh%02dm%02ds | activateChargingVoltage=%.3f | activateInversorVoltage=%.3f | activateWarningVoltage=%.3f | chargingTimeSecs=%d | idleMinTimeSecs=%d\n", days, hours, minutes, seconds, activateChargingVoltage, activateInversorVoltage, activateWarningVoltage, chargingTimeSecs, idleMinTimeSecs);
+      float voltageAdjustFactor = getVoltageAdjustFactor();
+      Serial.printf("uptime: %dd%02dh%02dm%02ds | voltageAdjustFactor=%.3f | activateChargingVoltage=%.3f | activateInversorVoltage=%.3f | activateWarningVoltage=%.3f | chargingTimeSecs=%d | idleMinTimeSecs=%d\n", days, hours, minutes, seconds, voltageAdjustFactor, activateChargingVoltage, activateInversorVoltage, activateWarningVoltage, chargingTimeSecs, idleMinTimeSecs);
       nextSettingsReport = uptimeSeconds + 60;
     }
     if (nextSerialReport <= uptimeSeconds) {
@@ -207,27 +214,27 @@ void serveStatusPage() {
 void serveSettingsPage() {
 
     int http_status;
-    if (server.method() == HTTP_POST) {
+    if (server.method() == HTTP_PUT) {
         String data = server.arg("plain");
         Serial.print("Update settings received with data: ");
         Serial.println(data);
         DeserializationError error = deserializeJson(jsonDocument, data);
         if (!error) {
-            float activate_charging_voltage = jsonDocument["activate_charging_voltage"];
-            float activate_inversor_voltage = jsonDocument["activate_inversor_voltage"];
-            float activate_warning_voltage = jsonDocument["activate_warning_voltage"];
-            unsigned int charging_time_secs = jsonDocument["charging_time_secs"];
-            unsigned int idle_min_time_secs = jsonDocument["idle_min_time_secs"];
-            if (0 < activate_charging_voltage && activate_charging_voltage <   100 &&
-                0 < activate_inversor_voltage && activate_inversor_voltage <   100 &&
-                0 < activate_warning_voltage  && activate_warning_voltage  <   100 &&
-                0 < charging_time_secs        && charging_time_secs        < 86400 &&
-                0 < idle_min_time_secs        && idle_min_time_secs        < 43200) {
-                preferences.putFloat(ACTIVATE_CHARGING_VOLTAGE_KEY, activate_charging_voltage);
-                preferences.putFloat(ACTIVATE_INVERSOR_VOLTAGE_KEY, activate_inversor_voltage);
-                preferences.putFloat(ACTIVATE_WARNING_VOLTAGE_KEY, activate_warning_voltage);
-                preferences.putUInt(CHARGING_TIME_SECONDS_KEY, charging_time_secs);
-                preferences.putUInt(IDLE_MIN_TIME_SECONDS_KEY, idle_min_time_secs);
+            float activateChargingVoltage = jsonDocument["activate_charging_voltage"];
+            float activateInversorVoltage = jsonDocument["activate_inversor_voltage"];
+            float activateWarningVoltage = jsonDocument["activate_warning_voltage"];
+            unsigned int chargingTimeSecs = jsonDocument["charging_time_secs"];
+            unsigned int idleMinTimeSecs = jsonDocument["idle_min_time_secs"];
+            if (0 < activateChargingVoltage && activateChargingVoltage <   100 &&
+                0 < activateInversorVoltage && activateInversorVoltage <   100 &&
+                0 < activateWarningVoltage  && activateWarningVoltage  <   100 &&
+                0 < chargingTimeSecs        && chargingTimeSecs        < 86400 &&
+                0 < idleMinTimeSecs         && idleMinTimeSecs         < 43200) {
+                preferences.putFloat(ACTIVATE_CHARGING_VOLTAGE_KEY, activateChargingVoltage);
+                preferences.putFloat(ACTIVATE_INVERSOR_VOLTAGE_KEY, activateInversorVoltage);
+                preferences.putFloat(ACTIVATE_WARNING_VOLTAGE_KEY, activateWarningVoltage);
+                preferences.putUInt(CHARGING_TIME_SECONDS_KEY, chargingTimeSecs);
+                preferences.putUInt(IDLE_MIN_TIME_SECONDS_KEY, idleMinTimeSecs);
                 nextSettingsReport = 0;
                 http_status = 201;
             } else {
@@ -258,6 +265,46 @@ void serveSettingsPage() {
     server.send(http_status, "application/json", jsonString);
 }
 
+void serveVoltageAjustPage() {
+
+    int http_status;
+    if (server.method() == HTTP_PUT) {
+        String data = server.arg("plain");
+        Serial.print("Update voltage adjust factor received with data: ");
+        Serial.println(data);
+        DeserializationError error = deserializeJson(jsonDocument, data);
+        if (!error) {
+            float voltageAdjustFactor = jsonDocument["voltage_adjust_factor"];
+            if (0.0 < voltageAdjustFactor && voltageAdjustFactor < 2.0) {
+                preferences.remove(VOLTAGE_ADJUST_FACTOR_KEY);
+                preferences.putFloat(VOLTAGE_ADJUST_FACTOR_KEY, voltageAdjustFactor);
+                voltageMultiplier = 3.3 * (VOLTAGE_DIVIDER_R1 + VOLTAGE_DIVIDER_R2) / 1023.0 / VOLTAGE_DIVIDER_R2 * voltageAdjustFactor;
+                nextSettingsReport = 0;
+                http_status = 201;
+            } else {
+                http_status = 400;
+            }
+        } else {
+            Serial.printf("JSON deserialization error: %s\n", error.c_str());
+            http_status = 400;
+        }
+        
+    } else {
+        if (server.method() == HTTP_GET) {
+            http_status = 200;
+        } else {
+            server.send(405, "plain/text", "405 Method Not Allowed");
+            return;
+        }
+    }
+
+    String jsonString = "";
+    JsonObject object = jsonDocument.to<JsonObject>();
+    object["voltage_adjust_factor"] = getVoltageAdjustFactor();
+    serializeJson(jsonDocument, jsonString);
+    server.send(http_status, "application/json", jsonString);
+}
+
 void serveNotFound() {
     server.send(404, "plain/text", "NOT FOUND");
 }
@@ -278,7 +325,7 @@ void configModeCallback(WiFiManager *localWifiManager) {
 void setup() {
 
     // Preferences
-    preferences.begin("charge-ctrl", false);
+    preferences.begin("chargeControl", false);
     
     // Basic pins and I/O setup
     pinMode(LED_BUILTIN, OUTPUT);
@@ -312,12 +359,13 @@ void setup() {
     drd.stop();
     server.on("/status", serveStatusPage);
     server.on("/settings", serveSettingsPage);
+    server.on("/voltage-adjust", serveVoltageAjustPage);
     server.onNotFound(serveNotFound);
     server.begin();
     Serial.println("HTTP server started!");
 
     // Initialize voltage level
-    voltageMultiplier = 3.3 * (VOLTAGE_DIVIDER_R1 + VOLTAGE_DIVIDER_R2) / 1023.0 / VOLTAGE_DIVIDER_R2 * VOLTAGE_ADJUST_FACTOR;
+    voltageMultiplier = 3.3 * (VOLTAGE_DIVIDER_R1 + VOLTAGE_DIVIDER_R2) / 1023.0 / VOLTAGE_DIVIDER_R2 * getVoltageAdjustFactor();
     voltage = getVoltage();
 }
 
