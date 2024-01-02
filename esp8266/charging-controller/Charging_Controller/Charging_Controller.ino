@@ -23,11 +23,13 @@
 *********************************************************************************/
 
 // Libraries
-#include <WiFiManager.h>
-#include <ESP8266WebServer.h>
-#include <ArduinoJson.h>
-#include <DoubleResetDetector.h>
-#include <Preferences.h> // Preferences@2.1.0
+#include <WiFiManager.h>         // WiFiManager@2.0.16-rc.2 by tzapu
+#include <WiFiUdp.h>             // ESP8266WiFi@3.1.2
+#include <NTPClient.h>           // NTPClient@3.2.1 by Fabrice Weinberg version
+#include <ESP8266WebServer.h>    // ESP8266WebServer@3.1.2
+#include <ArduinoJson.h>         // ArduinoJson@6.21.4 by Benoit Blanchon
+#include <DoubleResetDetector.h> // DoubleResetDetector@1.0.3 by Stephen Denne
+#include <Preferences.h>         // Preferences@2.1.0 by Volodymyr Shymanskyy
 
 // IO Pins
 #define BATTERY_VOLTAGE_PIN A0
@@ -58,14 +60,19 @@
 #define DRD_TIMEOUT 10  // Number of seconds after reset during which a subsequent reset will be considered a double reset.
 #define DRD_ADDRESS 0   // RTC Memory Address for the DoubleResetDetector to use
 
+// Objects used to sync time using NTP
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP);
+
 Preferences preferences;
 
 float voltage                           = 0.0;
 float voltageMultiplier                 = 0.0;
 bool inverterEnabled                    = false;
 bool chargerEnabled                     = false;
-unsigned long uptimeSeconds             = 0;
-unsigned long lastMillis                = 0;
+unsigned long startupTime               = 0;
+unsigned long epochTime                 = 0;
+unsigned long nextNtpTimeUpdate         = 0;
 unsigned long nextVoltageUpdateSec      = 0;
 unsigned long nextSerialReport          = 0;
 unsigned long nextSettingsReport        = 0;
@@ -106,18 +113,16 @@ float getVoltage() {
     return analogRead(BATTERY_VOLTAGE_PIN) * voltageMultiplier;
 }
 
-void updateUptime() {
-    unsigned long currentMillis = millis();
-    if (lastMillis + 1000 < currentMillis) {
-        int seconds = (currentMillis - lastMillis) / 1000;
-        uptimeSeconds += seconds;
-        lastMillis += (seconds * 1000);
-    } else {
-        if (currentMillis < lastMillis) {
-            int seconds = (4294967295 - lastMillis + currentMillis) / 1000;
-            uptimeSeconds += seconds;
-            lastMillis += (seconds * 1000);
-        }
+void updateTime() {
+    epochTime = timeClient.getEpochTime();
+    if (nextNtpTimeUpdate < epochTime) {
+        Serial.println("Updating local time with NTP server...");
+        timeClient.update();
+        epochTime = timeClient.getEpochTime();
+        nextNtpTimeUpdate = epochTime + 14400;
+    }
+    if (startupTime == 0 && epochTime > 0) {
+        startupTime = epochTime;
     }
 }
 
@@ -131,20 +136,20 @@ void updateLedStatus() {
 }
 
 void updateVoltage() {
-    if (nextVoltageUpdateSec <= uptimeSeconds) {
+    if (nextVoltageUpdateSec <= millis()) {
         voltage = (voltage * 9 + getVoltage()) / 10;
-        nextVoltageUpdateSec = uptimeSeconds + 1;
+        nextVoltageUpdateSec = millis() + 1000;
     } 
 }
 
 void updateChargerStatus() {
-    if (chargerStatusBlockedUntil <= uptimeSeconds) {
+    if (chargerStatusBlockedUntil <= epochTime) {
         if (voltage <= getActivateChargingVoltage()) {
-            chargerStatusBlockedUntil = uptimeSeconds + getChargingTimeSeconds();
+            chargerStatusBlockedUntil = epochTime + getChargingTimeSeconds();
             digitalWrite(ENABLE_CHARGING_PIN, LOW);
             chargerEnabled = true;
         } else {
-            chargerStatusBlockedUntil = uptimeSeconds + getIdleMinTimeSeconds();
+            chargerStatusBlockedUntil = epochTime + getIdleMinTimeSeconds();
             digitalWrite(ENABLE_CHARGING_PIN, HIGH);
             chargerEnabled = false;
         }
@@ -175,34 +180,35 @@ void updateBuzzer() {
 }
 
 void printSerialReport() {
-    unsigned long currentUptime = uptimeSeconds;
+    unsigned long currentUptime = epochTime - startupTime;
     int seconds = currentUptime % 60;
     currentUptime = currentUptime / 60;
     int minutes = currentUptime % 60;
     currentUptime = currentUptime / 60;
     int hours = currentUptime % 24;
     int days = (int) currentUptime / 24;
-    if (nextSettingsReport <= uptimeSeconds) {
+    if (nextSettingsReport <= millis()) {
       float activateChargingVoltage = getActivateChargingVoltage();
       float activateInversorVoltage = getActivateInversorVoltage();
       float activateWarningVoltage = getActivateWarningVoltage();
       unsigned int chargingTimeSecs = getChargingTimeSeconds();
       unsigned int idleMinTimeSecs = getIdleMinTimeSeconds();
       float voltageAdjustFactor = getVoltageAdjustFactor();
-      Serial.printf("uptime: %dd%02dh%02dm%02ds | voltageAdjustFactor=%.3f | activateChargingVoltage=%.3f | activateInversorVoltage=%.3f | activateWarningVoltage=%.3f | chargingTimeSecs=%d | idleMinTimeSecs=%d\n", days, hours, minutes, seconds, voltageAdjustFactor, activateChargingVoltage, activateInversorVoltage, activateWarningVoltage, chargingTimeSecs, idleMinTimeSecs);
-      nextSettingsReport = uptimeSeconds + 60;
+      Serial.printf("timestamp=%lu | uptime=%dd%02dh%02dm%02ds | voltageAdjustFactor=%.3f | activateChargingVoltage=%.3f | activateInversorVoltage=%.3f | activateWarningVoltage=%.3f | chargingTimeSecs=%d | idleMinTimeSecs=%d\n", epochTime, days, hours, minutes, seconds, voltageAdjustFactor, activateChargingVoltage, activateInversorVoltage, activateWarningVoltage, chargingTimeSecs, idleMinTimeSecs);
+      nextSettingsReport = millis() + 60000;
     }
-    if (nextSerialReport <= uptimeSeconds) {
+    if (nextSerialReport <= millis()) {
         bool alarm = voltage < getActivateWarningVoltage();
-        Serial.printf("uptime: %dd%02dh%02dm%02ds | voltage=%.3f | inverterEnabled=%d | chargerEnabled=%d | alarm=%d\n", days, hours, minutes, seconds, voltage, inverterEnabled, chargerEnabled, alarm);
-        nextSerialReport = uptimeSeconds + 3;
+        Serial.printf("timestamp=%lu | uptime=%dd%02dh%02dm%02ds | voltage=%.3f | inverterEnabled=%d | chargerEnabled=%d | alarm=%d\n", epochTime, days, hours, minutes, seconds, voltage, inverterEnabled, chargerEnabled, alarm);
+        nextSerialReport = millis() + 3000;
     }
 }
 
 void serveStatusPage() {
     String jsonString = "";
     JsonObject object = jsonDocument.to<JsonObject>();
-    object["uptime"] = uptimeSeconds;
+    object["timestamp"] = epochTime;
+    object["uptime"] = epochTime - startupTime;
     object["voltage"] = voltage;
     object["inverterEnabled"] = inverterEnabled;
     object["chargerEnabled"] = chargerEnabled;
@@ -357,6 +363,7 @@ void setup() {
     }
     delay(1000);
     drd.stop();
+    timeClient.begin();
     server.on("/status", serveStatusPage);
     server.on("/settings", serveSettingsPage);
     server.on("/voltage-adjust", serveVoltageAjustPage);
@@ -370,7 +377,7 @@ void setup() {
 }
 
 void loop() {
-    updateUptime();
+    updateTime();
     updateLedStatus();
     updateVoltage();
     updateChargerStatus();
