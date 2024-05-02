@@ -47,6 +47,8 @@
 #define DEVICE_NAME                        "ChargingController"
 #define DEVICE_TOPIC_PREFIX                     "charging-ctrl"
 #define NTP_REFRESH_INTERVAL                             86400 // Sync with NTP servers once a day
+#define MQTT_MAX_ATTEMPTS                                    3 // Attempts to connect to MQTT server before give up
+#define MQTT_BACKOFF_SECONDS                               300 // How many seconds to backoff in case of too many failures
 
 // Default values
 #define ACTIVATE_CHARGING_VOLTAGE_KEY           "charging-volt"
@@ -59,6 +61,8 @@
 #define CHARGING_TIME_SECONDS_DEFAULT_VALUE              10800 // 3 hours
 #define IDLE_MIN_TIME_SECONDS_KEY               "idle-min-time"
 #define IDLE_MIN_TIME_SECONDS_DEFAULT_VALUE               1800 // 30 minutes
+#define TIMEZONE_OFFSET_SECONDS_KEY                 "tz-offset"
+#define TIMEZONE_OFFSET_SECONDS_DEFAULT_VALUE           -10800 // GMT-3
 #define VOLTAGE_ADJUST_FACTOR_KEY                     "voltAdj"
 #define VOLTAGE_ADJUST_FACTOR_DEFAULT_VALUE                1.0 // 1 = No changes
 #define FORCE_CHARGE_START_TIME_KEY              "charge-start"
@@ -96,6 +100,7 @@ unsigned long startupTime               = 0;
 unsigned long epochTime                 = 0;
 unsigned long nextNtpTimeUpdate         = 0;
 unsigned long nextMQTTMessage           = 0;
+unsigned long ignoreMQTTUntil           = 0;
 unsigned long nextVoltageUpdateSec      = 0;
 unsigned long nextSerialReport          = 0;
 unsigned long nextSettingsReport        = 0;
@@ -126,6 +131,10 @@ unsigned int getChargingTimeSeconds() {
 
 unsigned int getIdleMinTimeSeconds() {
     return preferences.getUInt(IDLE_MIN_TIME_SECONDS_KEY, IDLE_MIN_TIME_SECONDS_DEFAULT_VALUE);
+}
+
+unsigned int getTimezoneOffsetSeconds() {
+    return preferences.getUInt(TIMEZONE_OFFSET_SECONDS_KEY, TIMEZONE_OFFSET_SECONDS_DEFAULT_VALUE);
 }
 
 float getVoltageAdjustFactor() {
@@ -183,53 +192,112 @@ void updateLedStatus() {
 }
 
 void connectToMQTTServer() {
-    String mqttServer = getMQTTHostname();
-    if (!mqttServer.isEmpty()) {
-        int mqttPort = getMQTTPort();
-        String mqttUsername = getMQTTUsername();
-        String mqttPassword = getMQTTPassword();
-        mqttClient.setServer(mqttServer.c_str(), mqttPort);
-        Serial.printf("Connecting to MQTT server %s:%d ", mqttServer, mqttPort);
-        while (!mqttClient.connected()) {
-            Serial.print(".");
-            mqttClient.connect(DEVICE_NAME, mqttUsername.c_str(), mqttPassword.c_str());
-            delay(500);
+    if (ignoreMQTTUntil < epochTime) {
+        String mqttServer = getMQTTHostname();
+        if (!mqttServer.isEmpty()) {
+            int mqttPort = getMQTTPort();
+            String mqttUsername = getMQTTUsername();
+            String mqttPassword = getMQTTPassword();
+            mqttClient.setServer(mqttServer.c_str(), mqttPort);
+            Serial.printf("Connecting to MQTT server %s:%d ", mqttServer, mqttPort);
+            int attempts = 0;
+            while (!mqttClient.connected() && attempts < MQTT_MAX_ATTEMPTS) {
+                Serial.print(".");
+                mqttClient.connect(DEVICE_NAME, mqttUsername.c_str(), mqttPassword.c_str());
+                delay(500);
+                attempts++;
+                if (attempts >= MQTT_MAX_ATTEMPTS) {
+                  ignoreMQTTUntil = epochTime + MQTT_BACKOFF_SECONDS;
+                }
+            }
+            if (mqttClient.connected()) {
+                Serial.printf(" connected!\n");
+            } else {
+                Serial.printf(" FAILURE!\n");
+            }
         }
-        Serial.printf(" connected!\n");
     }
 }
 
 void setupMQTT() {
-    if (!getMQTTHostname().isEmpty()) {
-        mqttClient.setBufferSize(512);
-        if (!mqttClient.connected()) {
-            connectToMQTTServer();
-        }
-        char newSensorInfo[512];
-        sprintf(newSensorInfo, "{\"unique_id\":\"%s-%08X-voltage\",\"name\":\"%s Voltage (%08X)\",\"device_class\":\"voltage\",\"unit_of_measurement\":\"V\",\"icon\":\"mdi:battery-charging-60\",\"state_topic\":\"%s-voltage/%08X/state\",\"expire_after\":\"300\"}",
-                                DEVICE_TOPIC_PREFIX, ESP.getChipId(), DEVICE_NAME, ESP.getChipId(), DEVICE_TOPIC_PREFIX, ESP.getChipId());
-        char mqttTopic[128];
-        sprintf(mqttTopic, "homeassistant/sensor/%s-voltage/%08X/config", DEVICE_TOPIC_PREFIX, ESP.getChipId());
-        Serial.printf("Publishing to topic '%s' message: '%s'\n", mqttTopic, newSensorInfo);
-        if (!mqttClient.publish(mqttTopic, newSensorInfo)) {
-            Serial.println("ERROR: Could not publish setup message!");
+    if (ignoreMQTTUntil < epochTime) {
+        if (!getMQTTHostname().isEmpty()) {
+            mqttClient.setBufferSize(512);
+            if (!mqttClient.connected()) {
+                connectToMQTTServer();
+            }
+            char mqttTopic[128];
+            char newSensorInfo[512];
+
+            // Voltage
+            sprintf(mqttTopic, "homeassistant/sensor/%s-voltage/%08X/config", DEVICE_TOPIC_PREFIX, ESP.getChipId());
+            sprintf(newSensorInfo, "{\"unique_id\":\"%s-%08X-voltage\",\"name\":\"%s Voltage (%08X)\",\"device_class\":\"voltage\",\"unit_of_measurement\":\"V\",\"icon\":\"mdi:battery-charging-60\",\"state_topic\":\"%s-voltage/%08X/state\",\"expire_after\":\"300\"}",
+                                    DEVICE_TOPIC_PREFIX, ESP.getChipId(), DEVICE_NAME, ESP.getChipId(), DEVICE_TOPIC_PREFIX, ESP.getChipId());
+            Serial.printf("Publishing to topic '%s' message: '%s'\n", mqttTopic, newSensorInfo);
+            if (!mqttClient.publish(mqttTopic, newSensorInfo)) {
+                Serial.println("ERROR: Could not publish setup message!");
+            }
+
+            // Charger
+            sprintf(mqttTopic, "homeassistant/binary_sensor/%s-charger/%08X/config", DEVICE_TOPIC_PREFIX, ESP.getChipId());
+            sprintf(newSensorInfo, "{\"unique_id\":\"%s-%08X-charger\",\"name\":\"%s Charger (%08X)\",\"device_class\":\"battery_charging\",\"state_topic\":\"%s-charger/%08X/state\",\"expire_after\":\"300\"}",
+                                    DEVICE_TOPIC_PREFIX, ESP.getChipId(), DEVICE_NAME, ESP.getChipId(), DEVICE_TOPIC_PREFIX, ESP.getChipId());
+            Serial.printf("Publishing to topic '%s' message: '%s'\n", mqttTopic, newSensorInfo);
+            if (!mqttClient.publish(mqttTopic, newSensorInfo)) {
+                Serial.println("ERROR: Could not publish setup message!");
+            }
+
+            // Inverter
+            sprintf(mqttTopic, "homeassistant/binary_sensor/%s-inverter/%08X/config", DEVICE_TOPIC_PREFIX, ESP.getChipId());
+            sprintf(newSensorInfo, "{\"unique_id\":\"%s-%08X-inverter\",\"name\":\"%s Inverter (%08X)\",\"device_class\":\"running\",\"state_topic\":\"%s-inverter/%08X/state\",\"expire_after\":\"300\"}",
+                                    DEVICE_TOPIC_PREFIX, ESP.getChipId(), DEVICE_NAME, ESP.getChipId(), DEVICE_TOPIC_PREFIX, ESP.getChipId());
+            Serial.printf("Publishing to topic '%s' message: '%s'\n", mqttTopic, newSensorInfo);
+            if (!mqttClient.publish(mqttTopic, newSensorInfo)) {
+                Serial.println("ERROR: Could not publish setup message!");
+            }
+
         }
     }
 }
 
 void updateMQTT() {
-    if (nextMQTTMessage <= epochTime) {
+    if (nextMQTTMessage <= epochTime && ignoreMQTTUntil < epochTime) {
         if (!getMQTTHostname().isEmpty()) {
             if (!mqttClient.connected()) {
                 connectToMQTTServer();
             }
             char mqttTopic[128];
             char data[128];
+
+            // Voltage
             sprintf(mqttTopic, "%s-voltage/%08X/state", DEVICE_TOPIC_PREFIX, ESP.getChipId());
             sprintf(data, "%.3f", voltage);
             if (!mqttClient.publish(mqttTopic, data)) {
                 Serial.println("ERROR: Could not publish update message!");
             }
+
+            // Charger
+            sprintf(mqttTopic, "%s-charger/%08X/state", DEVICE_TOPIC_PREFIX, ESP.getChipId());
+            if (chargerEnabled) {
+                sprintf(data, "ON");
+            } else {
+                sprintf(data, "OFF");
+            }
+            if (!mqttClient.publish(mqttTopic, data)) {
+                Serial.println("ERROR: Could not publish update message!");
+            }
+
+            // Inverter
+            sprintf(mqttTopic, "%s-inverter/%08X/state", DEVICE_TOPIC_PREFIX, ESP.getChipId());
+            if (inverterEnabled) {
+                sprintf(data, "ON");
+            } else {
+                sprintf(data, "OFF");
+            }
+            if (!mqttClient.publish(mqttTopic, data)) {
+                Serial.println("ERROR: Could not publish update message!");
+            }
+
         }
         nextMQTTMessage = epochTime + 60;
     }
@@ -243,14 +311,15 @@ void updateVoltage() {
 }
 
 void updateChargerStatus() {
+    bool wasEnabled = chargerEnabled;
     if (chargerStatusBlockedUntil <= epochTime) {
         if (voltage <= getActivateChargingVoltage()) {
             chargerStatusBlockedUntil = epochTime + getChargingTimeSeconds();
             digitalWrite(ENABLE_CHARGING_PIN, LOW);
             chargerEnabled = true;
         } else {
-            if (getForceChargeStartTime() != 0 && getForceChargeEndTime() != 0) {
-                unsigned int currentTime = timeClient.getHours() * 100 + timeClient.getMinutes();;
+            if (getForceChargeStartTime() != getForceChargeEndTime()) {
+                unsigned int currentTime = timeClient.getHours() * 100 + timeClient.getMinutes();
                 if (getForceChargeStartTime() <= currentTime && currentTime <= getForceChargeEndTime()) {
                     digitalWrite(ENABLE_CHARGING_PIN, LOW);
                     chargerEnabled = true;
@@ -265,15 +334,22 @@ void updateChargerStatus() {
             }
         }
     }
+    if (wasEnabled != chargerEnabled) {
+        nextMQTTMessage = 0;
+    }
 }
 
 void updateInversorStatus() {
+    bool wasEnabled = inverterEnabled;
     if (voltage >= getActivateInversorVoltage()) {
         digitalWrite(ENABLE_INVERSOR_PIN, LOW);
         inverterEnabled = true;
     } else {
         digitalWrite(ENABLE_INVERSOR_PIN, HIGH);
         inverterEnabled = false;
+    }
+    if (wasEnabled != inverterEnabled) {
+        nextMQTTMessage = 0;
     }
 }
 
@@ -416,7 +492,7 @@ void serveSettingsPage() {
                 preferences.putUInt(FORCE_CHARGE_START_TIME_KEY, forceChargeStartTime);
                 preferences.putUInt(FORCE_CHARGE_END_TIME_KEY, forceChargeEndTime);
                 nextSettingsReport = 0;
-                http_status = 201;
+                http_status = 200;
             } else {
                 http_status = 400;
             }
@@ -462,7 +538,7 @@ void serveVoltageAjustPage() {
                 preferences.putFloat(VOLTAGE_ADJUST_FACTOR_KEY, voltageAdjustFactor);
                 voltageMultiplier = 3.3 * (VOLTAGE_DIVIDER_R1 + VOLTAGE_DIVIDER_R2) / 1023.0 / VOLTAGE_DIVIDER_R2 * voltageAdjustFactor;
                 nextSettingsReport = 0;
-                http_status = 201;
+                http_status = 200;
             } else {
                 http_status = 400;
             }
@@ -486,6 +562,47 @@ void serveVoltageAjustPage() {
     serializeJson(jsonDocument, jsonString);
     server.send(http_status, "application/json", jsonString);
 }
+
+
+void serveTimezoneAPI() {
+
+    int http_status;
+    if (server.method() == HTTP_PUT) {
+        String data = server.arg("plain");
+        Serial.print("Update timezone offset with data: ");
+        Serial.println(data);
+        DeserializationError error = deserializeJson(jsonDocument, data);
+        if (!error) {
+            int offset = jsonDocument["timezone_offset_seconds"];
+            if (-43200 <= offset && offset <= 43200) {
+                preferences.putInt(TIMEZONE_OFFSET_SECONDS_KEY, offset);
+                timeClient.setTimeOffset(offset);
+                nextSettingsReport = 0;
+                http_status = 200;
+            } else {
+                http_status = 400;
+            }
+        } else {
+            Serial.printf("JSON deserialization error: %s\n", error.c_str());
+            http_status = 400;
+        }
+        
+    } else {
+        if (server.method() == HTTP_GET) {
+            http_status = 200;
+        } else {
+            server.send(405, "plain/text", "405 Method Not Allowed");
+            return;
+        }
+    }
+
+    String jsonString = "";
+    JsonObject object = jsonDocument.to<JsonObject>();
+    object["timezone_offset_seconds"] = getTimezoneOffsetSeconds();
+    serializeJson(jsonDocument, jsonString);
+    server.send(http_status, "application/json", jsonString);
+}
+
 
 void serveNotFound() {
     server.send(404, "plain/text", "NOT FOUND");
@@ -540,11 +657,13 @@ void setup() {
     delay(1000);
     drd.stop();
     timeClient.begin();
+    timeClient.setTimeOffset(getTimezoneOffsetSeconds());
     setupMQTT();
     server.on("/status", serveStatusPage);
     server.on("/mqtt", serveMqttSettingsPage);
     server.on("/settings", serveSettingsPage);
     server.on("/voltage-adjust", serveVoltageAjustPage);
+    server.on("/timezone", serveTimezoneAPI);
     server.onNotFound(serveNotFound);
     server.begin();
     Serial.println("HTTP server started!");
