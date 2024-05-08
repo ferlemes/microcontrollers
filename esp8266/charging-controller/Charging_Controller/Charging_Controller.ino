@@ -133,8 +133,8 @@ unsigned int getIdleMinTimeSeconds() {
     return preferences.getUInt(IDLE_MIN_TIME_SECONDS_KEY, IDLE_MIN_TIME_SECONDS_DEFAULT_VALUE);
 }
 
-unsigned int getTimezoneOffsetSeconds() {
-    return preferences.getUInt(TIMEZONE_OFFSET_SECONDS_KEY, TIMEZONE_OFFSET_SECONDS_DEFAULT_VALUE);
+int getTimezoneOffsetSeconds() {
+    return preferences.getInt(TIMEZONE_OFFSET_SECONDS_KEY, TIMEZONE_OFFSET_SECONDS_DEFAULT_VALUE);
 }
 
 float getVoltageAdjustFactor() {
