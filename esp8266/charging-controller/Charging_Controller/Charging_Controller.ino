@@ -231,28 +231,28 @@ void setupMQTT() {
 
             // Voltage
             sprintf(mqttTopic, "homeassistant/sensor/%s-voltage/%08X/config", DEVICE_TOPIC_PREFIX, ESP.getChipId());
-            sprintf(newSensorInfo, "{\"unique_id\":\"%s-%08X-voltage\",\"name\":\"%s Voltage (%08X)\",\"device_class\":\"voltage\",\"unit_of_measurement\":\"V\",\"icon\":\"mdi:battery-charging-60\",\"state_topic\":\"%s-voltage/%08X/state\",\"expire_after\":\"300\"}",
+            sprintf(newSensorInfo, "{\"unique_id\":\"%s-%08X-voltage\",\"name\":\"%s Voltage (%08X)\",\"device_class\":\"voltage\",\"unit_of_measurement\":\"V\",\"icon\":\"mdi:battery-charging-60\",\"state_topic\":\"%s-voltage/%08X/state\",\"expire_after\":\"330\"}",
                                     DEVICE_TOPIC_PREFIX, ESP.getChipId(), DEVICE_NAME, ESP.getChipId(), DEVICE_TOPIC_PREFIX, ESP.getChipId());
             Serial.printf("Publishing to topic '%s' message: '%s'\n", mqttTopic, newSensorInfo);
-            if (!mqttClient.publish(mqttTopic, newSensorInfo)) {
+            if (!mqttClient.publish(mqttTopic, newSensorInfo, true)) {
                 Serial.println("ERROR: Could not publish setup message!");
             }
 
             // Charger
             sprintf(mqttTopic, "homeassistant/binary_sensor/%s-charger/%08X/config", DEVICE_TOPIC_PREFIX, ESP.getChipId());
-            sprintf(newSensorInfo, "{\"unique_id\":\"%s-%08X-charger\",\"name\":\"%s Charger (%08X)\",\"device_class\":\"battery_charging\",\"state_topic\":\"%s-charger/%08X/state\",\"expire_after\":\"300\"}",
+            sprintf(newSensorInfo, "{\"unique_id\":\"%s-%08X-charger\",\"name\":\"%s Charger (%08X)\",\"device_class\":\"battery_charging\",\"state_topic\":\"%s-charger/%08X/state\",\"expire_after\":\"330\"}",
                                     DEVICE_TOPIC_PREFIX, ESP.getChipId(), DEVICE_NAME, ESP.getChipId(), DEVICE_TOPIC_PREFIX, ESP.getChipId());
             Serial.printf("Publishing to topic '%s' message: '%s'\n", mqttTopic, newSensorInfo);
-            if (!mqttClient.publish(mqttTopic, newSensorInfo)) {
+            if (!mqttClient.publish(mqttTopic, newSensorInfo, true)) {
                 Serial.println("ERROR: Could not publish setup message!");
             }
 
             // Inverter
             sprintf(mqttTopic, "homeassistant/binary_sensor/%s-inverter/%08X/config", DEVICE_TOPIC_PREFIX, ESP.getChipId());
-            sprintf(newSensorInfo, "{\"unique_id\":\"%s-%08X-inverter\",\"name\":\"%s Inverter (%08X)\",\"device_class\":\"running\",\"state_topic\":\"%s-inverter/%08X/state\",\"expire_after\":\"300\"}",
+            sprintf(newSensorInfo, "{\"unique_id\":\"%s-%08X-inverter\",\"name\":\"%s Inverter (%08X)\",\"device_class\":\"plug\",\"state_topic\":\"%s-inverter/%08X/state\",\"expire_after\":\"330\"}",
                                     DEVICE_TOPIC_PREFIX, ESP.getChipId(), DEVICE_NAME, ESP.getChipId(), DEVICE_TOPIC_PREFIX, ESP.getChipId());
             Serial.printf("Publishing to topic '%s' message: '%s'\n", mqttTopic, newSensorInfo);
-            if (!mqttClient.publish(mqttTopic, newSensorInfo)) {
+            if (!mqttClient.publish(mqttTopic, newSensorInfo, true)) {
                 Serial.println("ERROR: Could not publish setup message!");
             }
 
@@ -272,6 +272,7 @@ void updateMQTT() {
             // Voltage
             sprintf(mqttTopic, "%s-voltage/%08X/state", DEVICE_TOPIC_PREFIX, ESP.getChipId());
             sprintf(data, "%.3f", voltage);
+            Serial.printf("Publishing to topic '%s' message: '%s'\n", mqttTopic, data);
             if (!mqttClient.publish(mqttTopic, data)) {
                 Serial.println("ERROR: Could not publish update message!");
             }
@@ -279,8 +280,10 @@ void updateMQTT() {
             // Charger
             sprintf(mqttTopic, "%s-charger/%08X/state", DEVICE_TOPIC_PREFIX, ESP.getChipId());
             if (chargerEnabled) {
+                Serial.printf("Publishing to topic '%s' message: 'ON'\n", mqttTopic);
                 sprintf(data, "ON");
             } else {
+                Serial.printf("Publishing to topic '%s' message: 'OFF'\n", mqttTopic);
                 sprintf(data, "OFF");
             }
             if (!mqttClient.publish(mqttTopic, data)) {
@@ -290,8 +293,10 @@ void updateMQTT() {
             // Inverter
             sprintf(mqttTopic, "%s-inverter/%08X/state", DEVICE_TOPIC_PREFIX, ESP.getChipId());
             if (inverterEnabled) {
+                Serial.printf("Publishing to topic '%s' message: 'ON'\n", mqttTopic);
                 sprintf(data, "ON");
             } else {
+                Serial.printf("Publishing to topic '%s' message: 'OFF'\n", mqttTopic);
                 sprintf(data, "OFF");
             }
             if (!mqttClient.publish(mqttTopic, data)) {
@@ -299,7 +304,7 @@ void updateMQTT() {
             }
 
         }
-        nextMQTTMessage = epochTime + 60;
+        nextMQTTMessage = epochTime + 300;
     }
 }
 
