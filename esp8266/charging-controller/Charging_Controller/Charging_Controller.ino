@@ -30,7 +30,7 @@
 #include <PubSubClient.h>        // PubSubClient@2.8.0 by Nick O'Leary
 #include <ESP8266WebServer.h>    // ESP8266WebServer@3.1.2
 #include <ArduinoJson.h>         // ArduinoJson@6.21.4 by Benoit Blanchon
-#include <DoubleResetDetector.h> // DoubleResetDetector@1.0.3 by Stephen Denne
+#include <ESP_DoubleResetDetector.h> // ESP_DoubleResetDetector@1.3.2 by Khoi Hoang
 #include <Preferences.h>         // Preferences@2.1.0 by Volodymyr Shymanskyy
 
 // IO Pins
@@ -111,7 +111,7 @@ ESP8266WebServer server(80);
 StaticJsonDocument<255> jsonDocument;
 
 // Double Reset detector
-DoubleResetDetector drd(DRD_TIMEOUT, DRD_ADDRESS);
+DoubleResetDetector* drd;
 
 float getActivateChargingVoltage() {
     return preferences.getFloat(ACTIVATE_CHARGING_VOLTAGE_KEY, ACTIVATE_CHARGING_VOLTAGE_DEFAULT_VALUE);
@@ -614,7 +614,6 @@ void serveNotFound() {
 }
 
 void configModeCallback(WiFiManager *localWifiManager) {
-    drd.stop();
     Serial.println("Entering Wifi Manager configuration mode...");
     preferences.clear();
     for (int blinks = 0; blinks < 15; blinks++) {
@@ -648,7 +647,8 @@ void setup() {
     WiFiManager wifiManager;
     wifiManager.setAPStaticIPConfig(IPAddress(192,168,0,1), IPAddress(192,168,0,1), IPAddress(255,255,255,0));
     wifiManager.setAPCallback(configModeCallback);
-    if (drd.detectDoubleReset()) {
+    drd = new DoubleResetDetector(DRD_TIMEOUT, DRD_ADDRESS);
+    if (drd->detectDoubleReset()) {
         wifiManager.startConfigPortal(DEVICE_NAME);
     } else {
         if (!wifiManager.autoConnect(DEVICE_NAME)) {
@@ -660,7 +660,6 @@ void setup() {
         }
     }
     delay(1000);
-    drd.stop();
     timeClient.begin();
     timeClient.setTimeOffset(getTimezoneOffsetSeconds());
     setupMQTT();
@@ -688,4 +687,5 @@ void loop() {
     updateBuzzer();
     printSerialReport();
     server.handleClient();
+    drd->loop();
 }
