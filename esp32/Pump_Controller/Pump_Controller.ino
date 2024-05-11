@@ -34,10 +34,11 @@
 #include <Preferences.h>             // Preferences@2.1.0 by Volodymyr Shymanskyy
 
 // IO Pins
-#define LED_BUILTIN                                         2
-#define PRESSURE_SENSOR_PIN                                 12
-#define FLOW_SENSOR_PIN                                     13
-#define ENABLE_PUMP_PIN                                     14
+#define LED_BUILTIN                                         23
+#define SENSOR_1_PIN                                        12
+#define SENSOR_2_PIN                                        13
+#define SENSOR_3_PIN                                        14
+#define ENABLE_PUMP_PIN                                     16
 
 // Software settings'
 #define DEVICE_NAME                            "PumpController"
@@ -53,6 +54,8 @@
 #define MAX_TIME_SECONDS_DEFAULT_VALUE                     600
 #define COOLDOWN_TIME_SECONDS_KEY               "cooldown-time"
 #define COOLDOWN_TIME_SECONDS_DEFAULT_VALUE                300
+#define MAX_COOLDOWN_COUNT                                  16 // If the cooldown feature is triggered this much, there must be some failure on the sensors
+#define MAX_COOLDOWN_PERIOD                              86400 // The amount of time to clean the cooldown feature counter (1 day by default)
 
 // MQTT Settings
 #define MQTT_SERVER_HOSTNAME_KEY                  "mqtt-server"
@@ -79,6 +82,7 @@ PubSubClient mqttClient(aWiFiClient);
 Preferences preferences;
 
 bool pumpEnabled                     = false;
+bool tooManyCooldowns                = false;
 unsigned long pumpEnabledUntilEpoch  = 0;
 unsigned long pumpEnabledSince       = 0;
 unsigned long pumpDisabledUntilEpoch = 0;
@@ -89,6 +93,7 @@ unsigned long nextNtpTimeUpdate      = 0;
 unsigned long nextSettingsReport     = 0;
 unsigned long nextMQTTMessage        = 0;
 unsigned long ignoreMQTTUntil        = 0;
+int cooldownCounter                  = 0;
 
 
 // Web server for metrics
@@ -227,11 +232,16 @@ void updateMQTT() {
 
 void updatePumpEnabled() {
     
+    if (tooManyCooldowns) {
+        digitalWrite(ENABLE_PUMP_PIN, LOW);
+        return;
+    }
+
     bool previousPumpStatus = pumpEnabled;
 
     if (pumpDisabledUntilEpoch <= epochTime) {
       
-        if (digitalRead(PRESSURE_SENSOR_PIN) == LOW || digitalRead(FLOW_SENSOR_PIN) == LOW) { 
+        if (digitalRead(SENSOR_1_PIN) == LOW || digitalRead(SENSOR_2_PIN) == LOW || digitalRead(SENSOR_3_PIN) == LOW) { 
             if (pumpEnabledSince == 0) {
                 pumpEnabledSince = epochTime;
             }
@@ -242,6 +252,9 @@ void updatePumpEnabled() {
                 pumpEnabledSince = 0;
                 pumpEnabledUntilEpoch = 0;
                 pumpDisabledUntilEpoch = epochTime + getCooldownTimeSeconds();
+                cooldownCounter = cooldownCounter + 1;
+            } else {
+                pumpDisabledUntilEpoch = 0;
             }
         } else {
             if (epochTime <= pumpEnabledUntilEpoch) {
@@ -260,6 +273,15 @@ void updatePumpEnabled() {
         if (pumpDisabledUntilEpoch <= epochTime) {
             pumpDisabledUntilEpoch = 0;
         }
+    }
+
+    if (MAX_COOLDOWN_COUNT <= cooldownCounter) {
+        tooManyCooldowns = true;
+    }
+    
+    unsigned long currentUptime = epochTime - startupTime;
+    if (currentUptime % MAX_COOLDOWN_PERIOD == 0) {
+        cooldownCounter = 0;
     }
     
     if (pumpEnabled) {
@@ -288,7 +310,7 @@ void printSerialReport() {
     unsigned long cooldownSeconds = pumpDisabledUntilEpoch - epochTime;
     if (pumpDisabledUntilEpoch == 0) cooldownSeconds = 0;
     if (nextSettingsReport <= epochTime) {
-        Serial.printf("timestamp=%lu | uptime=%dd%02dh%02dm%02ds | pumpEnabled=%d | pumpRunningSeconds=%lu | pumpDelaySeconds=%lu | cooldownSeconds=%lu\n", epochTime, days, hours, minutes, seconds, pumpEnabled, pumpRunningSeconds, pumpDelaySeconds, cooldownSeconds);
+        Serial.printf("timestamp=%lu | uptime=%dd%02dh%02dm%02ds | pumpEnabled=%d | pumpRunningSeconds=%lu | pumpDelaySeconds=%lu | cooldownSeconds=%lu | cooldownCounter=%d | tooManyCooldowns=%d\n", epochTime, days, hours, minutes, seconds, pumpEnabled, pumpRunningSeconds, pumpDelaySeconds, cooldownSeconds, cooldownCounter, tooManyCooldowns);
         nextSettingsReport = epochTime + 1;
     }
 }
@@ -312,6 +334,8 @@ void serveStatusPage() {
     object["pumpRunningSeconds"] = pumpRunningSeconds;
     object["pumpDelaySeconds"] = pumpDelaySeconds;
     object["cooldownSeconds"] = cooldownSeconds;
+    object["cooldownCounter"] = cooldownCounter;
+    object["tooManyCooldowns"] = tooManyCooldowns;
     serializeJson(jsonDocument, jsonString);
     server.send(200, "application/json", jsonString);
 }
@@ -445,8 +469,9 @@ void setup() {
 
     // Basic pins and I/O setup
     pinMode(LED_BUILTIN, OUTPUT);
-    pinMode(PRESSURE_SENSOR_PIN, INPUT_PULLUP);
-    pinMode(FLOW_SENSOR_PIN, INPUT_PULLUP);
+    pinMode(SENSOR_1_PIN, INPUT_PULLUP);
+    pinMode(SENSOR_2_PIN, INPUT_PULLUP);
+    pinMode(SENSOR_3_PIN, INPUT_PULLUP);
     pinMode(ENABLE_PUMP_PIN, OUTPUT);
     digitalWrite(ENABLE_PUMP_PIN, LOW);
     Serial.begin(9600);
